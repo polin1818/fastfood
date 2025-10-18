@@ -14,19 +14,32 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.recetteafrique.app",
+      "icon": "./assets/logo.png",
+      "infoPlist": {
+        "UILaunchImages": [
+          {
+            "UILaunchImageMinimumOSVersion": "8.0",
+            "UILaunchImageName": "logo",
+            "UILaunchImageOrientation": "Portrait",
+            "UILaunchImageSize": "{375, 667}"
+          }
+        ]
+      }
     },
     "android": {
       "package": "com.recetteafrique.app",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/logo.png",
         "backgroundColor": "#ffffff"
       },
+      "icon": "./assets/logo.png",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/logo.png"
     },
     "plugins": [
       "expo-secure-store",
