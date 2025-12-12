@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+// Home.tsx
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -10,36 +11,149 @@ import {
   ScrollView,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
-import { supabase } from "../../utils/supabase"; // Assure-toi d'avoir Supabase configuré
+import { supabase } from "../../utils/supabase"; // adapte le path si besoin
 
-// Import APIs
+// Import APIs (tes wrappers existants)
 import { getAfricanRecipes } from "../api/edamam";
 import { getDessertRecipes } from "../api/mealdb";
-import { getPopularRecipes, getQuickRecipes, searchSpoonacularRecipes } from "../api/spoonacular";
+import {
+  getPopularRecipes,
+  searchSpoonacularRecipes,
+} from "../api/spoonacular";
 
-// TypeScript interface
-interface Recipe {
-  uri?: string;
-  id?: string | number;
+// ---------------------- Types ----------------------
+type Recipe = {
+  id: string; // uniﬁed id (string)
+  uri?: string; // edamam
   label: string;
   title?: string;
-  image: string;
+  image?: string | null;
   source?: string;
-  url?: string;
-}
+  url?: string | null;
+  raw?: any; // raw original object if besoin
+};
 
-const Home = () => {
-  const [africanRecipes, setAfricanRecipes] = useState<Recipe[]>([]);
-  const [dessertRecipes, setDessertRecipes] = useState<Recipe[]>([]);
-  const [internationalRecipes, setInternationalRecipes] = useState<Recipe[]>([]);
-  const [popularRecipes, setPopularRecipes] = useState<Recipe[]>([]);
-  const [quickRecipes, setQuickRecipes] = useState<Recipe[]>([]);
-  const [newRecipes, setNewRecipes] = useState<Recipe[]>([]); // Nouveautés BD
-  const [loading, setLoading] = useState<boolean>(true);
+// State par section (pagination locale)
+type SectionState = {
+  items: Recipe[]; // tous les items chargés côté client
+  visibleCount: number; // combien afficher actuellement
+  loading: boolean; // chargement initial / pagination
+  error?: string | null;
+  finished: boolean; // plus rien à charger
+};
 
+// ---------------------- Helpers ----------------------
+const PLACEHOLDER_IMAGE =
+  "https://via.placeholder.com/300x200.png?text=No+Image";
+
+const normalizeFromEdamamHit = (hit: any): Recipe => {
+  const r = hit?.recipe ?? hit;
+  const uri = r.uri ?? r.url ?? JSON.stringify(r.label || r.title || Math.random());
+  return {
+    id: (uri || Math.random()).toString(),
+    uri: uri,
+    label: r.label || r.title || "Recette",
+    image: r.image || null,
+    source: r.source || r.sourceName || null,
+    url: r.url || null,
+    raw: r,
+  };
+};
+
+const normalizeFromMealDB = (m: any): Recipe => {
+  return {
+    id: (m.idMeal ?? m.id ?? m.strMeal ?? Math.random()).toString(),
+    label: m.strMeal ?? m.name ?? "Recette",
+    image: m.strMealThumb ?? m.thumbnail ?? null,
+    source: m.strArea ?? null,
+    url: null,
+    raw: m,
+  };
+};
+
+const normalizeFromSpoonacular = (r: any): Recipe => {
+  return {
+    id: (r.id ?? r.recipeId ?? Math.random()).toString(),
+    label: r.title ?? r.name ?? "Recette",
+    image: r.image ?? r.imageUrl ?? null,
+    source: r.sourceName ?? null,
+    url: r.sourceUrl ?? null,
+    raw: r,
+  };
+};
+
+const normalizeFromSupabase = (r: any): Recipe => {
+  return {
+    id: (r.id ?? r.uuid ?? Math.random()).toString(),
+    label: r.title ?? r.name ?? "Recette",
+    image: r.image_url ?? r.image ?? null,
+    source: r.source ?? "Local",
+    url: r.url ?? null,
+    raw: r,
+  };
+};
+
+// Paginate local array: return next chunk
+const paginateLocal = (arr: Recipe[], visibleCount: number, chunk = 6) =>
+  arr.slice(0, Math.min(arr.length, visibleCount + chunk));
+
+// ---------------------- Home Component ----------------------
+const Home: React.FC = () => {
   const navigation = useNavigation();
 
-  // Astuces du jour
+  // Sections : africain, dessert, international, populaires, quick, nouveaux (BD)
+  const [africain, setAfricain] = useState<SectionState>({
+    items: [],
+    visibleCount: 6,
+    loading: true,
+    error: null,
+    finished: false,
+  });
+  const [dessert, setDessert] = useState<SectionState>({
+    items: [],
+    visibleCount: 6,
+    loading: true,
+    error: null,
+    finished: false,
+  });
+  const [international, setInternational] = useState<SectionState>({
+    items: [],
+    visibleCount: 6,
+    loading: true,
+    error: null,
+    finished: false,
+  });
+  const [popular, setPopular] = useState<SectionState>({
+    items: [],
+    visibleCount: 6,
+    loading: true,
+    error: null,
+    finished: false,
+  });
+  const [quick, setQuick] = useState<SectionState>({
+    items: [],
+    visibleCount: 6,
+    loading: true,
+    error: null,
+    finished: false,
+  });
+  const [nouveaux, setNouveaux] = useState<SectionState>({
+    items: [],
+    visibleCount: 6,
+    loading: true,
+    error: null,
+    finished: false,
+  });
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Tips
   const tips = [
     "💡 Pour un gâteau plus moelleux, ajoutez un yaourt nature.",
     "💡 Salez l’eau des pâtes seulement à ébullition pour une cuisson parfaite.",
@@ -49,243 +163,372 @@ const Home = () => {
   ];
   const todayTip = tips[new Date().getDate() % tips.length];
 
+  // ---------- Loaders initiaux (fetch once per source, then paginate local) ----------
   useEffect(() => {
-    loadAllRecipes();
+    loadAfricain();
+    loadDessert();
+    loadInternational();
+    loadPopular();
+    loadQuick();
+    loadNouveaux();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadAllRecipes = async () => {
+  // AFRICA
+  const loadAfricain = async () => {
     try {
-      setLoading(true);
-
-      // Africaines
-      const africanData = await getAfricanRecipes();
-      if (africanData.hits) {
-        setAfricanRecipes(
-          africanData.hits.map((hit: any) => ({
-            uri: hit.recipe.uri,
-            label: hit.recipe.label,
-            image: hit.recipe.image,
-            source: hit.recipe.source,
-            url: hit.recipe.url,
-          }))
-        );
+      setAfricain((s) => ({ ...s, loading: true, error: null }));
+      const data = await getAfricanRecipes(); // wrapper de ton code
+      if (!mountedRef.current) return;
+      if (!data || !data.hits) {
+        setAfricain((s) => ({ ...s, loading: false, error: "Aucune donnée" }));
+        return;
       }
-
-      // Desserts
-      const dessertData = await getDessertRecipes();
-      if (dessertData.meals) {
-        setDessertRecipes(
-          dessertData.meals.map((m: any) => ({
-            id: m.idMeal,
-            label: m.strMeal,
-            image: m.strMealThumb,
-          }))
-        );
-      }
-
-      // Internationales
-      const intlData = await searchSpoonacularRecipes("pasta, chicken");
-      if (intlData.results) {
-        setInternationalRecipes(
-          intlData.results.map((r: any) => ({
-            id: r.id,
-            label: r.title,
-            image: r.image,
-          }))
-        );
-      }
-
-      // Populaires
-      const popularData = await getPopularRecipes();
-      if (popularData.recipes) {
-        setPopularRecipes(
-          popularData.recipes.map((r: any) => ({
-            id: r.id,
-            label: r.title,
-            image: r.image,
-          }))
-        );
-      }
-
-      // Rapides & Faciles
-      const quickData = await searchSpoonacularRecipes("quick");
-      if (quickData.results) {
-        setQuickRecipes(
-          quickData.results.map((r: any) => ({
-            id: r.id,
-            label: r.title,
-            image: r.image,
-          }))
-        );
-      }
-
-      // --- Nouveautés depuis BD ---
-      try {
-        const { data, error } = await supabase
-          .from("recettes")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .limit(10);
-
-        if (error) throw error;
-
-        if (data) {
-          setNewRecipes(
-            data.map((r: any) => ({
-              id: r.id,
-              label: r.title,
-              image: r.image_url,
-              source: "Afrique",
-              url: r.url,
-            }))
-          );
-        }
-      } catch (err) {
-        console.error("Erreur chargement nouveautés :", err);
-      }
-
-    } catch (error) {
-      console.error("Erreur lors du chargement des recettes :", error);
-    } finally {
-      setLoading(false);
+      const normalized = data.hits.map((h: any) => normalizeFromEdamamHit(h));
+      setAfricain((s) => ({
+        ...s,
+        items: normalized,
+        loading: false,
+        finished: normalized.length === 0,
+      }));
+    } catch (err: any) {
+      console.error("Err loadAfricain", err);
+      if (!mountedRef.current) return;
+      setAfricain((s) => ({ ...s, loading: false, error: err.message || "Erreur" }));
     }
   };
 
-  const renderRecipeCard = ({ item }: { item: Recipe }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => navigation.navigate("RecipeDetail", { recipe: item })}
-    >
-      <Image source={{ uri: item.image }} style={styles.image} />
-      <Text style={styles.name} numberOfLines={2}>{item.label}</Text>
-    </TouchableOpacity>
-  );
-
-  const handleVoirPlus = (category: string) => {
-    navigation.navigate("Search", { category });
+  // DESSERT (MealDB)
+  const loadDessert = async () => {
+    try {
+      setDessert((s) => ({ ...s, loading: true, error: null }));
+      const data = await getDessertRecipes();
+      if (!mountedRef.current) return;
+      if (!data || !data.meals) {
+        setDessert((s) => ({ ...s, loading: false, error: "Aucune donnée" }));
+        return;
+      }
+      const normalized = data.meals.map((m: any) => normalizeFromMealDB(m));
+      setDessert((s) => ({
+        ...s,
+        items: normalized,
+        loading: false,
+        finished: normalized.length === 0,
+      }));
+    } catch (err: any) {
+      console.error("Err loadDessert", err);
+      if (!mountedRef.current) return;
+      setDessert((s) => ({ ...s, loading: false, error: err.message || "Erreur" }));
+    }
   };
 
-  if (loading) {
+  // INTERNATIONAL (Spoonacular search pasta/chicken)
+  const loadInternational = async () => {
+    try {
+      setInternational((s) => ({ ...s, loading: true, error: null }));
+      const data = await searchSpoonacularRecipes("pasta, chicken");
+      if (!mountedRef.current) return;
+      const results = data?.results ?? [];
+      const normalized = results.map((r: any) => normalizeFromSpoonacular(r));
+      setInternational((s) => ({
+        ...s,
+        items: normalized,
+        loading: false,
+        finished: normalized.length === 0,
+      }));
+    } catch (err: any) {
+      console.error("Err loadInternational", err);
+      if (!mountedRef.current) return;
+      setInternational((s) => ({ ...s, loading: false, error: err.message || "Erreur" }));
+    }
+  };
+
+  // POPULAR (Spoonacular random)
+  const loadPopular = async () => {
+    try {
+      setPopular((s) => ({ ...s, loading: true, error: null }));
+      const data = await getPopularRecipes();
+      if (!mountedRef.current) return;
+      const results = data?.recipes ?? [];
+      const normalized = results.map((r: any) => normalizeFromSpoonacular(r));
+      setPopular((s) => ({
+        ...s,
+        items: normalized,
+        loading: false,
+        finished: normalized.length === 0,
+      }));
+    } catch (err: any) {
+      console.error("Err loadPopular", err);
+      if (!mountedRef.current) return;
+      setPopular((s) => ({ ...s, loading: false, error: err.message || "Erreur" }));
+    }
+  };
+
+  // QUICK (search spoonacular quick)
+  const loadQuick = async () => {
+    try {
+      setQuick((s) => ({ ...s, loading: true, error: null }));
+      const data = await searchSpoonacularRecipes("quick");
+      if (!mountedRef.current) return;
+      const results = data?.results ?? [];
+      const normalized = results.map((r: any) => normalizeFromSpoonacular(r));
+      setQuick((s) => ({
+        ...s,
+        items: normalized,
+        loading: false,
+        finished: normalized.length === 0,
+      }));
+    } catch (err: any) {
+      console.error("Err loadQuick", err);
+      if (!mountedRef.current) return;
+      setQuick((s) => ({ ...s, loading: false, error: err.message || "Erreur" }));
+    }
+  };
+
+  // NOUVEAUX (Supabase)
+  const loadNouveaux = async () => {
+    try {
+      setNouveaux((s) => ({ ...s, loading: true, error: null }));
+      const { data, error } = await supabase
+        .from("recettes")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(50); // on fetche 50 puis paginate localement
+
+      if (error) throw error;
+      if (!data) {
+        setNouveaux((s) => ({ ...s, loading: false, error: "Aucune recette" }));
+        return;
+      }
+      const normalized = data.map((r: any) => normalizeFromSupabase(r));
+      setNouveaux((s) => ({
+        ...s,
+        items: normalized,
+        loading: false,
+        finished: normalized.length === 0,
+      }));
+    } catch (err: any) {
+      console.error("Err loadNouveaux", err);
+      if (!mountedRef.current) return;
+      setNouveaux((s) => ({ ...s, loading: false, error: err.message || "Erreur" }));
+    }
+  };
+
+  // ---------- Pagination par section lorsqu'on scroll la section ----------
+  const onEndReachedSection = (sectionName: string) => {
+    switch (sectionName) {
+      case "africain":
+        setAfricain((s) => {
+          if (s.finished) return s;
+          const nextItems = paginateLocal(s.items, s.visibleCount, 6);
+          return {
+            ...s,
+            visibleCount: Math.min(nextItems.length, s.items.length),
+            finished: nextItems.length >= s.items.length,
+          };
+        });
+        break;
+      case "dessert":
+        setDessert((s) => {
+          if (s.finished) return s;
+          const nextItems = paginateLocal(s.items, s.visibleCount, 6);
+          return {
+            ...s,
+            visibleCount: Math.min(nextItems.length, s.items.length),
+            finished: nextItems.length >= s.items.length,
+          };
+        });
+        break;
+      case "international":
+        setInternational((s) => {
+          if (s.finished) return s;
+          const nextItems = paginateLocal(s.items, s.visibleCount, 6);
+          return {
+            ...s,
+            visibleCount: Math.min(nextItems.length, s.items.length),
+            finished: nextItems.length >= s.items.length,
+          };
+        });
+        break;
+      case "popular":
+        setPopular((s) => {
+          if (s.finished) return s;
+          const nextItems = paginateLocal(s.items, s.visibleCount, 6);
+          return {
+            ...s,
+            visibleCount: Math.min(nextItems.length, s.items.length),
+            finished: nextItems.length >= s.items.length,
+          };
+        });
+        break;
+      case "quick":
+        setQuick((s) => {
+          if (s.finished) return s;
+          const nextItems = paginateLocal(s.items, s.visibleCount, 6);
+          return {
+            ...s,
+            visibleCount: Math.min(nextItems.length, s.items.length),
+            finished: nextItems.length >= s.items.length,
+          };
+        });
+        break;
+      case "nouveaux":
+        setNouveaux((s) => {
+          if (s.finished) return s;
+          const nextItems = paginateLocal(s.items, s.visibleCount, 6);
+          return {
+            ...s,
+            visibleCount: Math.min(nextItems.length, s.items.length),
+            finished: nextItems.length >= s.items.length,
+          };
+        });
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Render card
+  const renderRecipeCard = ({ item }: { item: Recipe }) => {
+    const uri = item.image ?? PLACEHOLDER_IMAGE;
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FF6347" />
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => navigation.navigate("RecipeDetail", { recipe: item })}
+      >
+        <Image source={{ uri }} style={styles.image} resizeMode="cover" />
+        <Text style={styles.name} numberOfLines={2}>
+          {item.label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  // small helper to render section header + list
+  const Section = ({
+    title,
+    state,
+    onEndReached,
+    horizontal = false,
+  }: {
+    title: string;
+    state: SectionState;
+    onEndReached: () => void;
+    horizontal?: boolean;
+  }) => {
+    // show only visibleCount items
+    const visibleItems = state.items.slice(0, state.visibleCount);
+
+    return (
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+
+        {state.loading ? (
+          <ActivityIndicator size="small" color="#FF6347" />
+        ) : state.error ? (
+          <Text style={{ color: "red" }}>{state.error}</Text>
+        ) : (
+          <FlatList
+            data={visibleItems}
+            renderItem={renderRecipeCard}
+            keyExtractor={(item) => item.id}
+            numColumns={horizontal ? 1 : 2}
+            horizontal={horizontal}
+            showsHorizontalScrollIndicator={false}
+            scrollEnabled={horizontal} // horizontals are scrollable, vertical columns not
+            onEndReached={() => {
+              if (!state.finished) onEndReached();
+            }}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={() =>
+              state.loading ? <ActivityIndicator size="small" color="#FF6347" /> : null
+            }
+            contentContainerStyle={{ paddingBottom: 6 }}
+          />
+        )}
+
+        {!state.loading && !state.finished && state.items.length > state.visibleCount && (
+          <TouchableOpacity
+            style={styles.moreButton}
+            onPress={() => {
+              // charger plus immédiatement (fallback si onEndReached pas déclenché)
+              onEndReached();
+            }}
+          >
+            <Text style={styles.moreText}>Voir plus</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
-  }
+  };
 
+  // ---------- Render ----------
   return (
     <ScrollView style={styles.container}>
-      {/* Message d'accueil */}
       <Text style={styles.welcome}>
         👩‍🍳 Bienvenue sur <Text style={styles.brand}>RecetteAfrique</Text> 🌍{"\n"}
         Laissez-vous inspirer par nos recettes africaines, internationales et sucrées 🍰 !
       </Text>
 
-      {/* Recette du jour */}
+      {/* Recette du jour (premier africain si dispo) */}
       <View style={styles.highlight}>
         <Text style={styles.sectionTitle}>🔥 Recette du jour</Text>
-        {africanRecipes[0] && (
+        {africain.items.length > 0 ? (
           <TouchableOpacity
-            onPress={() => navigation.navigate("RecipeDetail", { recipe: africanRecipes[0] })}
+            onPress={() => navigation.navigate("RecipeDetail", { recipe: africain.items[0] })}
           >
-            <Image source={{ uri: africanRecipes[0].image }} style={styles.highlightImage} />
-            <Text style={styles.highlightText}>{africanRecipes[0].label}</Text>
+            <Image
+              source={{ uri: africain.items[0].image ?? PLACEHOLDER_IMAGE }}
+              style={styles.highlightImage}
+            />
+            <Text style={styles.highlightText}>{africain.items[0].label}</Text>
             <Text style={styles.viewRecipe}>[ Voir recette ]</Text>
           </TouchableOpacity>
+        ) : africain.loading ? (
+          <ActivityIndicator size="small" color="#FF6347" />
+        ) : (
+          <Text>Aucune recette du jour.</Text>
         )}
       </View>
 
-      {/* Nouveautés */}
-      {newRecipes.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🆕 Nouveautés</Text>
-          <FlatList
-            data={newRecipes.slice(0, 10)}
-            renderItem={renderRecipeCard}
-            keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
-            numColumns={2}
-            scrollEnabled={false}
-          />
-          <TouchableOpacity style={styles.moreButton} onPress={() => handleVoirPlus("Nouveautés")}>
-            <Text style={styles.moreText}>Voir plus</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* Sections: Nouveautés, Africaines, Internationales, Desserts, Populaires, Rapides */}
+      <Section
+        title="🆕 Nouveautés"
+        state={nouveaux}
+        onEndReached={() => onEndReachedSection("nouveaux")}
+      />
 
-      {/* Recettes Africaines */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>🍲 Recettes Africaines</Text>
-        <FlatList
-          data={africanRecipes.slice(0, 10)}
-          renderItem={renderRecipeCard}
-          keyExtractor={(item) => item.uri || item.id?.toString() || Math.random().toString()}
-          numColumns={2}
-          scrollEnabled={false}
-        />
-        <TouchableOpacity style={styles.moreButton} onPress={() => handleVoirPlus("African")}>
-          <Text style={styles.moreText}>Voir plus</Text>
-        </TouchableOpacity>
-      </View>
+      <Section
+        title="🍲 Recettes Africaines"
+        state={africain}
+        onEndReached={() => onEndReachedSection("africain")}
+      />
 
-      {/* Recettes Internationales */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>🌐 Recettes Internationales</Text>
-        <FlatList
-          data={internationalRecipes.slice(0, 10)}
-          renderItem={renderRecipeCard}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
-          numColumns={2}
-          scrollEnabled={false}
-        />
-        <TouchableOpacity style={styles.moreButton} onPress={() => handleVoirPlus("International")}>
-          <Text style={styles.moreText}>Voir plus</Text>
-        </TouchableOpacity>
-      </View>
+      <Section
+        title="🌐 Recettes Internationales"
+        state={international}
+        onEndReached={() => onEndReachedSection("international")}
+      />
 
-      {/* Gâteaux & Desserts */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>🍰 Gâteaux & Desserts</Text>
-        <FlatList
-          data={dessertRecipes.slice(0, 10)}
-          renderItem={renderRecipeCard}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
-          numColumns={2}
-          scrollEnabled={false}
-        />
-        <TouchableOpacity style={styles.moreButton} onPress={() => handleVoirPlus("Dessert")}>
-          <Text style={styles.moreText}>Voir plus</Text>
-        </TouchableOpacity>
-      </View>
+      <Section
+        title="🍰 Gâteaux & Desserts"
+        state={dessert}
+        onEndReached={() => onEndReachedSection("dessert")}
+      />
 
-      {/* Populaires */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>🔥 Populaires</Text>
-        <FlatList
-          data={popularRecipes.slice(0, 5)}
-          renderItem={renderRecipeCard}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-        />
-        <TouchableOpacity style={styles.moreButton} onPress={() => handleVoirPlus("Popular")}>
-          <Text style={styles.moreText}>Voir plus</Text>
-        </TouchableOpacity>
-      </View>
+      <Section
+        title="🔥 Populaires"
+        state={popular}
+        onEndReached={() => onEndReachedSection("popular")}
+        horizontal={true}
+      />
 
-      {/* Rapides & Faciles */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>⚡ Rapides & Faciles</Text>
-        <FlatList
-          data={quickRecipes.slice(0, 5)}
-          renderItem={renderRecipeCard}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-        />
-        <TouchableOpacity style={styles.moreButton} onPress={() => handleVoirPlus("Quick")}>
-          <Text style={styles.moreText}>Voir plus</Text>
-        </TouchableOpacity>
-      </View>
+      <Section
+        title="⚡ Rapides & Faciles"
+        state={quick}
+        onEndReached={() => onEndReachedSection("quick")}
+        horizontal={true}
+      />
 
       {/* Astuce du jour */}
       <View style={styles.tip}>
@@ -298,34 +541,45 @@ const Home = () => {
 
 export default Home;
 
+// ---------------------- Styles ----------------------
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff", padding: 10 },
-  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
+  container: { flex: 1, backgroundColor: "#fff", padding: 12 },
   welcome: { fontSize: 18, fontWeight: "600", marginVertical: 10, textAlign: "center" },
   brand: { color: "#FF6347", fontWeight: "bold" },
 
-  highlight: { marginVertical: 15 },
-  highlightImage: { width: "100%", height: 200, borderRadius: 10 },
+  highlight: { marginVertical: 10 },
+  highlightImage: { width: "100%", height: 200, borderRadius: 12 },
   highlightText: { fontSize: 20, fontWeight: "bold", marginTop: 8, textAlign: "center" },
   viewRecipe: { color: "#FF6347", textAlign: "center", marginTop: 4, fontWeight: "bold" },
 
-  section: { marginVertical: 15 },
-  sectionTitle: { fontSize: 20, fontWeight: "bold", marginBottom: 10 },
+  section: { marginVertical: 12 },
+  sectionTitle: { fontSize: 20, fontWeight: "bold", marginBottom: 8 },
   card: {
     flex: 1,
-    margin: 5,
+    margin: 6,
     backgroundColor: "#f8f8f8",
     borderRadius: 10,
     overflow: "hidden",
     alignItems: "center",
-    elevation: 3,
+    elevation: 2,
+    maxWidth: "48%",
   },
   image: { width: "100%", height: 120 },
-  name: { fontSize: 14, fontWeight: "600", margin: 5, textAlign: "center" },
-  moreButton: { backgroundColor: "#FF6347", padding: 10, borderRadius: 20, alignSelf: "center", marginTop: 10 },
-  moreText: { color: "#fff", fontWeight: "bold" },
+  name: { fontSize: 14, fontWeight: "600", margin: 6, textAlign: "center" },
 
-  tip: { backgroundColor: "#FFF4E6", padding: 15, borderRadius: 10, marginTop: 20 },
-  tipTitle: { fontSize: 18, fontWeight: "bold", marginBottom: 5 },
+  moreButton: {
+    backgroundColor: "#FF6347",
+    padding: 8,
+    borderRadius: 20,
+    alignSelf: "center",
+    marginTop: 10,
+    width: 120,
+  },
+  moreText: { color: "#fff", fontWeight: "bold", textAlign: "center" },
+
+  tip: { backgroundColor: "#FFF4E6", padding: 14, borderRadius: 10, marginTop: 18, marginBottom: 40 },
+  tipTitle: { fontSize: 18, fontWeight: "bold", marginBottom: 6 },
   tipText: { fontSize: 16, fontStyle: "italic" },
+
+  highlightTextSmall: { fontSize: 16, fontWeight: "600" },
 });

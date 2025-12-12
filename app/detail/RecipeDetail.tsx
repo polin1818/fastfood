@@ -1,286 +1,159 @@
 import React, { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Image,
-  ScrollView,
-  TouchableOpacity,
-  Share,
-  Modal,
-  Linking,
-} from "react-native";
+import { View, Text, Image, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
 import { useRoute } from "@react-navigation/native";
-import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from "@expo/vector-icons";
-import Video from "react-native-video";
+import { supabase } from "../../utils/supabase";
+import { FontAwesome5, MaterialIcons, Entypo } from "@expo/vector-icons";
 
-interface Recipe {
-  id?: string | number;
-  label?: string;
-  title?: string;
-  name?: string;
-  image: string;
-  source?: string;
-  instructions?: string[] | string;
-  ingredientLines?: string[];
-  strInstructions?: string;
-  calories?: number;
-  yield?: number;
-  dietLabels?: string[];
-  healthLabels?: string[];
-  totalTime?: number;
-  video?: string;
-  youtube?: string;
-}
+const isUUID = (id: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 
-const RecipeDetail = () => {
+const DetailRecette = () => {
   const route = useRoute();
-  const { recipe } = route.params as { recipe: Recipe };
-  const [videoVisible, setVideoVisible] = useState(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const { recipe } = route.params as { recipe: any };
 
-  const title =
-    recipe.label || recipe.title || recipe.name || "Recette";
+  const [steps, setSteps] = useState<any[]>([]);
+  const [author, setAuthor] = useState<string>("Inconnu");
+  const [loading, setLoading] = useState(true);
 
-  // détection vidéo
+  // Ingrédients
+  const ingredients =
+    recipe.ingredient_lines && Array.isArray(recipe.ingredient_lines)
+      ? recipe.ingredient_lines
+      : recipe.raw?.ingredientLines || [];
+
+  // Infos supplémentaires
+  const totalTime = recipe.total_time ?? recipe.raw?.totalTime;
+  const portions = recipe.yield ?? recipe.raw?.yield;
+  const calories = recipe.calories ?? recipe.raw?.calories;
+  const category = recipe.category ?? recipe.raw?.category;
+  const country = recipe.country ?? recipe.raw?.country;
+  const dietLabels = recipe.diet_labels ?? recipe.raw?.dietLabels ?? [];
+  const healthLabels = recipe.health_labels ?? recipe.raw?.healthLabels ?? [];
+
   useEffect(() => {
-    if (recipe.video) setVideoUrl(recipe.video);
-    else if (recipe.youtube) setVideoUrl(recipe.youtube.replace("watch?v=", "embed/"));
+    const fetchBDData = async () => {
+      // Si recette locale BD
+      if (recipe.id && isUUID(recipe.id)) {
+        try {
+          setLoading(true);
+
+          // Étapes
+          if (recipe.id && isUUID(recipe.id)) {
+            const { data: stepsData, error: stepsError } = await supabase
+              .from("steps")
+              .select("*")
+              .eq("recette_id", recipe.id)
+              .order("step_number", { ascending: true });
+            if (stepsError) throw stepsError;
+            setSteps(stepsData || []);
+          }
+
+          // Auteur
+          if (recipe.created_by && isUUID(recipe.created_by)) {
+            const { data: profileData, error: profileError } = await supabase
+              .from("profiles")
+              .select("full_name")
+              .eq("id", recipe.created_by)
+              .single();
+            if (!profileError && profileData) setAuthor(profileData.full_name);
+          }
+        } catch (err) {
+          console.error("Erreur fetch BD:", err);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        // Recette API
+        setAuthor(recipe.source || "API Externe");
+        setLoading(false);
+      }
+    };
+
+    fetchBDData();
   }, [recipe]);
 
-  const shareRecipe = async () => {
-    await Share.share({
-      message: `Découvrez cette recette : ${title}`,
-    });
-  };
+  if (!recipe)
+    return (
+      <View style={styles.center}>
+        <Text>Aucune recette reçue</Text>
+      </View>
+    );
 
-  // Récupération des instructions uniformisées
-  const getInstructions = () => {
-    if (recipe.instructions) {
-      if (Array.isArray(recipe.instructions)) return recipe.instructions;
-      return recipe.instructions.split(". ");
-    }
-    if (recipe.strInstructions) return recipe.strInstructions.split(". ");
-    return [];
-  };
+  const img =
+    recipe.image ?? recipe.image_url ?? recipe.raw?.image ?? "https://via.placeholder.com/500x300.png?text=Aucune+Image";
 
   return (
     <ScrollView style={styles.container}>
-      {/* IMAGE HEADER */}
-      <View style={styles.headerContainer}>
-        <Image source={{ uri: recipe.image }} style={styles.headerImage} />
-        <View style={styles.headerOverlay} />
-
-        <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>{title}</Text>
-
-          <TouchableOpacity onPress={shareRecipe} style={styles.shareBtn}>
-            <Ionicons name="share-social-outline" size={24} color="#fff" />
-          </TouchableOpacity>
-        </View>
+      <Image source={{ uri: img }} style={styles.image} />
+      <Text style={styles.title}>{recipe.label || recipe.title}</Text>
+      <View style={styles.row}>
+        <FontAwesome5 name="user" size={16} color="#555" />
+        <Text style={styles.author}> {author}</Text>
       </View>
 
-      {/* INFORMATIONS */}
-      <View style={styles.infoRow}>
-        {recipe.calories && (
-          <View style={styles.infoCard}>
-            <FontAwesome5 name="fire" size={18} color="#FF4500" />
-            <Text style={styles.infoTxt}>{Math.round(recipe.calories)} kcal</Text>
-          </View>
-        )}
-
-        {recipe.yield && (
-          <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="food" size={20} color="#27AE60" />
-            <Text style={styles.infoTxt}>{recipe.yield} portions</Text>
-          </View>
-        )}
-
-        {recipe.totalTime !== undefined && (
-          <View style={styles.infoCard}>
-            <Ionicons name="time-outline" size={20} color="#2980B9" />
-            <Text style={styles.infoTxt}>
-              {recipe.totalTime > 0 ? `${recipe.totalTime} min` : "Temps inconnu"}
-            </Text>
-          </View>
-        )}
-      </View>
-
-      {/* INGREDIENTS */}
-      {recipe.ingredientLines && recipe.ingredientLines.length > 0 && (
+      {recipe.description && (
         <>
-          <Text style={styles.sectionTitle}>Ingrédients</Text>
-
-          {recipe.ingredientLines.map((item, i) => (
-            <View key={i} style={styles.ingRow}>
-              <Ionicons name="checkmark-circle" size={20} color="#D35400" />
-              <Text style={styles.ingText}>{item}</Text>
-            </View>
-          ))}
+          <Text style={styles.section}>
+            <MaterialIcons name="description" size={20} color="#FF6347" /> Description
+          </Text>
+          <Text style={styles.item}>{recipe.description}</Text>
         </>
       )}
 
-      {/* INSTRUCTIONS */}
-      {getInstructions().length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>Préparation</Text>
-
-          {getInstructions().map((step, index) => (
-            <View key={index} style={styles.stepRow}>
-              <View style={styles.stepNumber}>
-                <Text style={{ color: "#fff", fontWeight: "bold" }}>{index + 1}</Text>
-              </View>
-              <Text style={styles.stepText}>{step.trim()}</Text>
-            </View>
-          ))}
-        </>
+      <Text style={styles.section}>
+        <Entypo name="bowl" size={20} color="#FF6347" /> Ingrédients
+      </Text>
+      {ingredients.length > 0 ? (
+        ingredients.map((i, idx) => (
+          <Text key={idx} style={styles.item}>
+            • {i}
+          </Text>
+        ))
+      ) : (
+        <Text style={styles.noData}>Aucun ingrédient disponible</Text>
       )}
 
-      {/* VIDEO */}
-      {videoUrl && (
-        <>
-          <Text style={styles.sectionTitle}>Vidéo</Text>
+      <Text style={styles.section}>
+        <MaterialIcons name="timer" size={20} color="#FF6347" /> Informations
+      </Text>
+      <Text style={styles.item}>⏱ Temps : {totalTime ?? "N/A"} min</Text>
+      <Text style={styles.item}>🍽 Portions : {portions ?? "N/A"}</Text>
+      <Text style={styles.item}>🔥 Calories : {calories ?? "N/A"}</Text>
+      <Text style={styles.item}>📂 Catégorie : {category ?? "N/A"}</Text>
+      <Text style={styles.item}>🌍 Pays : {country ?? "N/A"}</Text>
+      {dietLabels.length > 0 && <Text style={styles.item}>🥗 Labels diététiques : {dietLabels.join(", ")}</Text>}
+      {healthLabels.length > 0 && <Text style={styles.item}>💊 Labels santé : {healthLabels.join(", ")}</Text>}
 
-          <TouchableOpacity onPress={() => setVideoVisible(true)}>
-            <Image
-              source={{ uri: recipe.image }}
-              style={[styles.headerImage, { height: 200 }]}
-            />
-            <Ionicons
-              name="play-circle"
-              size={64}
-              color="#fff"
-              style={styles.playIcon}
-            />
-          </TouchableOpacity>
-
-          <Modal visible={videoVisible} animationType="slide">
-            <View style={{ flex: 1, backgroundColor: "#000" }}>
-              <Video
-                source={{ uri: videoUrl }}
-                style={{ flex: 1 }}
-                controls
-                resizeMode="contain"
-              />
-
-              <TouchableOpacity
-                onPress={() => setVideoVisible(false)}
-                style={styles.closeBtn}
-              >
-                <Ionicons name="close-circle" size={40} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          </Modal>
-        </>
+      <Text style={styles.section}>
+        <MaterialIcons name="restaurant-menu" size={20} color="#FF6347" /> Étapes
+      </Text>
+      {loading ? (
+        <ActivityIndicator size="small" color="#FF6347" />
+      ) : steps.length > 0 ? (
+        steps.map((s: any) => (
+          <Text key={s.id} style={styles.item}>
+            {s.step_number}. {s.instruction}
+          </Text>
+        ))
+      ) : (
+        <Text style={styles.noData}>
+          {isUUID(recipe.id) ? "Aucune étape enregistrée" : "Étapes non disponibles pour cette recette API"}
+        </Text>
       )}
     </ScrollView>
   );
 };
 
-export default RecipeDetail;
+export default DetailRecette;
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "white",
-  },
-
-  /* HEADER IMAGE */
-  headerContainer: {
-    position: "relative",
-    height: 280,
-  },
-  headerImage: {
-    width: "100%",
-    height: "100%",
-  },
-  headerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.3)",
-  },
-  headerContent: {
-    position: "absolute",
-    bottom: 20,
-    left: 15,
-  },
-  headerTitle: {
-    fontSize: 32,
-    color: "#fff",
-    fontWeight: "bold",
-    width: "80%",
-  },
-  shareBtn: {
-    position: "absolute",
-    right: -20,
-    top: -10,
-  },
-
-  /* INFO */
-  infoRow: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-    marginVertical: 20,
-  },
-  infoCard: {
-    alignItems: "center",
-  },
-  infoTxt: {
-    marginTop: 5,
-    fontSize: 15,
-    fontWeight: "600",
-  },
-
-  /* INGREDIENTS */
-  sectionTitle: {
-    fontSize: 22,
-    fontWeight: "bold",
-    marginVertical: 10,
-    marginLeft: 15,
-    color: "#D35400",
-  },
-  ingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginLeft: 20,
-    marginBottom: 8,
-  },
-  ingText: {
-    marginLeft: 10,
-    fontSize: 16,
-    color: "#555",
-  },
-
-  /* INSTRUCTIONS */
-  stepRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    marginHorizontal: 20,
-    marginBottom: 12,
-  },
-  stepNumber: {
-    width: 28,
-    height: 28,
-    borderRadius: 20,
-    backgroundColor: "#D35400",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 10,
-  },
-  stepText: {
-    fontSize: 16,
-    color: "#333",
-    flex: 1,
-  },
-
-  /* VIDEO */
-  playIcon: {
-    position: "absolute",
-    top: "35%",
-    left: "40%",
-  },
-  closeBtn: {
-    position: "absolute",
-    top: 40,
-    right: 20,
-  },
+  container: { flex: 1, padding: 15, backgroundColor: "#FAFAFA" },
+  image: { width: "100%", height: 250, borderRadius: 12, marginBottom: 10 },
+  title: { fontSize: 28, fontWeight: "bold", marginVertical: 8, color: "#333" },
+  author: { fontSize: 16, fontStyle: "italic", color: "#555" },
+  section: { fontSize: 20, marginTop: 20, fontWeight: "bold", color: "#FF6347", marginBottom: 5 },
+  item: { fontSize: 16, marginVertical: 3, color: "#444" },
+  noData: { color: "gray", marginVertical: 5, fontStyle: "italic" },
+  center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  row: { flexDirection: "row", alignItems: "center", marginBottom: 5 },
 });
