@@ -499,19 +499,19 @@ const Home: React.FC = () => {
       />
 
       <Section
-        title="🍲 Recettes Africaines"
+        title=" Recettes Africaines"
         state={africain}
         onEndReached={() => onEndReachedSection("africain")}
       />
 
       <Section
-        title="🌐 Recettes Internationales"
+        title=" Recettes Internationales"
         state={international}
         onEndReached={() => onEndReachedSection("international")}
       />
 
       <Section
-        title="🍰 Gâteaux & Desserts"
+        title=" Gâteaux & Desserts"
         state={dessert}
         onEndReached={() => onEndReachedSection("dessert")}
       />
